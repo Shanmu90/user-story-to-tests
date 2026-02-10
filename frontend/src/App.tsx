@@ -1,6 +1,6 @@
-import { useState } from 'react'
-import { generateTests, fetchJiraIssue } from './api'
-import { GenerateRequest, GenerateResponse, TestCase } from './types'
+import React, { useState } from 'react'
+import { generateTests, fetchJiraIssue, fetchJiraProjects, fetchJiraIssues, evaluateWithDeepEval } from './api'
+import { GenerateRequest, GenerateResponse } from './types'
 
 function App() {
   const [formData, setFormData] = useState<GenerateRequest>({
@@ -12,19 +12,20 @@ function App() {
   const [results, setResults] = useState<GenerateResponse | null>(null)
   const [isLoading, setIsLoading] = useState<boolean>(false)
   const [error, setError] = useState<string | null>(null)
-  const [expandedTestCases, setExpandedTestCases] = useState<Set<string>>(new Set())
-  const [showJiraInput, setShowJiraInput] = useState<boolean>(false)
-  const [jiraKey, setJiraKey] = useState<string>('')
 
-  const toggleTestCaseExpansion = (testCaseId: string) => {
-    const newExpanded = new Set(expandedTestCases)
-    if (newExpanded.has(testCaseId)) {
-      newExpanded.delete(testCaseId)
-    } else {
-      newExpanded.add(testCaseId)
-    }
-    setExpandedTestCases(newExpanded)
-  }
+  const [showJiraPicker, setShowJiraPicker] = useState<boolean>(false)
+  const [projects, setProjects] = useState<Array<{ key: string; name: string }>>([])
+  const [selectedProject, setSelectedProject] = useState<string>('')
+  const [projectIssues, setProjectIssues] = useState<Array<{ key: string; summary: string }>>([])
+  const [selectedIssue, setSelectedIssue] = useState<string>('')
+
+  const [currentTab, setCurrentTab] = useState<'generate' | 'evaluate'>('generate')
+  const [evalMetrics, setEvalMetrics] = useState<Record<string, Record<string, any>>>({})
+  const [selectedIds, setSelectedIds] = useState<string[]>([])
+  const [selectedMetrics, setSelectedMetrics] = useState<string[]>(['answer_relevancy','faithfulness','hallucination'])
+  const [selectedEvalProject, setSelectedEvalProject] = useState<string>('')
+  const [selectedEvalIssue, setSelectedEvalIssue] = useState<string>('')
+  const [evalContext, setEvalContext] = useState<string>('')
 
   const handleInputChange = (field: keyof GenerateRequest, value: string) => {
     setFormData(prev => ({ ...prev, [field]: value }))
@@ -32,18 +33,15 @@ function App() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    
     if (!formData.storyTitle.trim() || !formData.acceptanceCriteria.trim()) {
       setError('Story Title and Acceptance Criteria are required')
       return
     }
-
     setIsLoading(true)
     setError(null)
-    
     try {
-      const response = await generateTests(formData)
-      setResults(response)
+      const resp = await generateTests(formData)
+      setResults(resp)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to generate tests')
     } finally {
@@ -51,27 +49,149 @@ function App() {
     }
   }
 
-  const handleFetchJira = async () => {
-    const key = jiraKey.trim()
-    if (!key) {
-      setError('Please enter a Jira issue key')
-      return
+  const loadJiraProjects = async () => {
+    try {
+      setIsLoading(true)
+      const list = await fetchJiraProjects()
+      setProjects(list || [])
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load Jira projects')
+    } finally {
+      setIsLoading(false)
     }
+  }
 
+  const loadIssuesForProject = async (projectKey: string) => {
+    try {
+      setIsLoading(true)
+      const issues = await fetchJiraIssues(projectKey)
+      setProjectIssues(issues || [])
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load Jira issues')
+    } finally {
+      setIsLoading(false)
+    }
+  }
+
+  const handleSelectIssue = async (issueKey: string) => {
+    if (!issueKey) return
     setIsLoading(true)
     setError(null)
     try {
-      const issue = await fetchJiraIssue(key)
+      const issue = await fetchJiraIssue(issueKey)
       setFormData(prev => ({
         ...prev,
         storyTitle: issue.summary || prev.storyTitle,
         description: issue.description || prev.description,
         acceptanceCriteria: issue.acceptanceCriteria || prev.acceptanceCriteria
       }))
-      setShowJiraInput(false)
-      setJiraKey('')
+      setShowJiraPicker(false)
+      setSelectedProject('')
+      setProjectIssues([])
+      setSelectedIssue('')
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to fetch Jira issue')
+    } finally {
+      setIsLoading(false)
+    }
+  }
+
+  const downloadCSV = () => {
+    if (!results) return
+    const rows: string[][] = []
+    rows.push(['Test Case ID', 'Title', 'Category', 'Expected Result', 'Steps', 'Test Data'])
+    results.cases.forEach(tc => {
+      const steps = Array.isArray(tc.steps) ? tc.steps.join(' | ') : ''
+      rows.push([tc.id, tc.title, tc.category, tc.expectedResult, steps, tc.testData || ''])
+    })
+
+    const csv = rows.map(r => r.map(cell => `"${String(cell).replace(/"/g, '""')}"`).join(',')).join('\n')
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = 'test-cases.csv'
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    URL.revokeObjectURL(url)
+  }
+
+  
+
+  const runEvalForTestCase = async (tc: any) => {
+    setIsLoading(true)
+    setError(null)
+    try {
+      await evaluateSingle(tc)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'DeepEval failed')
+    } finally {
+      setIsLoading(false)
+    }
+  }
+
+  const evaluateSingle = async (tc: any, metrics?: string[]) => {
+    const output = `${tc.id}: ${tc.title} -> ${tc.expectedResult}`
+    const metricsToRun = metrics && metrics.length ? metrics : selectedMetrics.length ? selectedMetrics : ['answer_relevancy']
+    const resultsForTc: Record<string, any> = {}
+    for (const metric of metricsToRun) {
+      const payload: any = { query: formData.storyTitle || undefined, output, metric }
+      // include context for hallucination checks
+      if (metric === 'hallucination') {
+        const ctx: string[] = []
+        if (formData.description) ctx.push(formData.description)
+        if (formData.acceptanceCriteria) ctx.push(formData.acceptanceCriteria)
+        if (formData.additionalInfo) ctx.push(formData.additionalInfo)
+        if (selectedEvalIssue) {
+          try {
+            const issue = await fetchJiraIssue(selectedEvalIssue)
+            if (issue.description) ctx.push(issue.description)
+            if ((issue as any).acceptanceCriteria) ctx.push((issue as any).acceptanceCriteria)
+          } catch (e) {
+            // ignore
+          }
+        }
+        if (ctx.length) payload.context = ctx
+      }
+      const resp = await evaluateWithDeepEval(payload)
+      const evaluation = resp.evaluation || resp
+      resultsForTc[metric] = evaluation
+      setEvalMetrics(prev => ({ ...prev, [tc.id]: { ...(prev[tc.id] || {}), [metric]: evaluation } }))
+    }
+    return resultsForTc
+  }
+
+  const runEvalForSelected = async () => {
+    if (!results) return
+    const ids = selectedIds.length ? selectedIds : []
+    if (ids.length === 0) return
+    setIsLoading(true)
+    setError(null)
+    try {
+      for (const id of ids) {
+        const tc = results.cases.find((c: any) => c.id === id)
+        if (!tc) continue
+        await evaluateSingle(tc)
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'DeepEval failed')
+    } finally {
+      setIsLoading(false)
+    }
+  }
+
+  const runEvalForAll = async () => {
+    if (!results) return
+    setIsLoading(true)
+    setError(null)
+    try {
+      for (const tc of results.cases) {
+        await evaluateSingle(tc)
+      }
+      setSelectedIds(results.cases.map((c: any) => c.id))
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'DeepEval failed')
     } finally {
       setIsLoading(false)
     }
@@ -80,479 +200,254 @@ function App() {
   return (
     <div>
       <style>{`
-        * {
-          box-sizing: border-box;
-          margin: 0;
-          padding: 0;
-        }
-        
-        body {
-          font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
-          background-color: #f5f5f5;
-          color: #333;
-          line-height: 1.6;
-        }
-        
-        .container {
-          max-width: 95%;
-          width: 100%;
-          margin: 0 auto;
-          padding: 20px;
-          min-height: 100vh;
-        }
-        
-        @media (min-width: 768px) {
-          .container {
-            max-width: 90%;
-            padding: 30px;
-          }
-        }
-        
-        @media (min-width: 1024px) {
-          .container {
-            max-width: 85%;
-            padding: 40px;
-          }
-        }
-        
-        @media (min-width: 1440px) {
-          .container {
-            max-width: 1800px;
-            padding: 50px;
-          }
-        }
-        
-        .header {
-          text-align: center;
-          margin-bottom: 40px;
-        }
-        
-        .title {
-          font-size: 2.5rem;
-          color: #2c3e50;
-          margin-bottom: 10px;
-        }
-        
-        .subtitle {
-          color: #666;
-          font-size: 1.1rem;
-        }
-        
-        .form-container {
-          background: white;
-          border-radius: 8px;
-          padding: 30px;
-          box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-          margin-bottom: 30px;
-        }
-        
-        .form-group {
-          margin-bottom: 20px;
-        }
-        
-        .form-label {
-          display: block;
-          font-weight: 600;
-          margin-bottom: 8px;
-          color: #2c3e50;
-        }
-        
-        .form-input, .form-textarea {
-          width: 100%;
-          padding: 12px;
-          border: 2px solid #e1e8ed;
-          border-radius: 6px;
-          font-size: 14px;
-          transition: border-color 0.2s;
-        }
-        
-        .form-input:focus, .form-textarea:focus {
-          outline: none;
-          border-color: #3498db;
-        }
-        
-        .form-textarea {
-          resize: vertical;
-          min-height: 100px;
-        }
-        
-        .submit-btn {
-          background: #3498db;
-          color: white;
-          border: none;
-          padding: 12px 24px;
-          border-radius: 6px;
-          font-size: 16px;
-          font-weight: 600;
-          cursor: pointer;
-          transition: background-color 0.2s;
-        }
-        
-        .submit-btn:hover:not(:disabled) {
-          background: #2980b9;
-        }
-        
-        .submit-btn:disabled {
-          background: #bdc3c7;
-          cursor: not-allowed;
-        }
-        
-        .error-banner {
-          background: #e74c3c;
-          color: white;
-          padding: 15px;
-          border-radius: 6px;
-          margin-bottom: 20px;
-        }
-        
-        .loading {
-          text-align: center;
-          padding: 40px;
-          color: #666;
-          font-size: 18px;
-        }
-        
-        .results-container {
-          background: white;
-          border-radius: 8px;
-          padding: 30px;
-          box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-        }
-        
-        .results-header {
-          margin-bottom: 20px;
-          padding-bottom: 15px;
-          border-bottom: 2px solid #e1e8ed;
-        }
-        
-        .results-title {
-          font-size: 1.8rem;
-          color: #2c3e50;
-          margin-bottom: 10px;
-        }
-        
-        .results-meta {
-          color: #666;
-          font-size: 14px;
-        }
-        
-        .table-container {
-          overflow-x: auto;
-        }
-        
-        .results-table {
-          width: 100%;
-          border-collapse: collapse;
-          margin-top: 20px;
-        }
-        
-        .results-table th,
-        .results-table td {
-          padding: 12px;
-          text-align: left;
-          border-bottom: 1px solid #e1e8ed;
-        }
-        
-        .results-table th {
-          background: #f8f9fa;
-          font-weight: 600;
-          color: #2c3e50;
-        }
-        
-        .results-table tr:hover {
-          background: #f8f9fa;
-        }
-        
-        .category-positive { color: #27ae60; font-weight: 600; }
-        .category-negative { color: #e74c3c; font-weight: 600; }
-        .category-edge { color: #f39c12; font-weight: 600; }
-        .category-authorization { color: #9b59b6; font-weight: 600; }
-        .category-non-functional { color: #34495e; font-weight: 600; }
-        
-        .test-case-id {
-          cursor: pointer;
-          color: #3498db;
-          font-weight: 600;
-          padding: 8px 12px;
-          border-radius: 4px;
-          transition: background-color 0.2s;
-          display: inline-flex;
-          align-items: center;
-          gap: 8px;
-        }
-        
-        .test-case-id:hover {
-          background: #f8f9fa;
-        }
-        
-        .test-case-id.expanded {
-          background: #e3f2fd;
-          color: #1976d2;
-        }
-        
-        .expand-icon {
-          font-size: 10px;
-          transition: transform 0.2s;
-        }
-        
-        .expand-icon.expanded {
-          transform: rotate(90deg);
-        }
-        
-        .expanded-details {
-          margin-top: 15px;
-          background: #fafbfc;
-          border: 1px solid #e1e8ed;
-          border-radius: 8px;
-          padding: 20px;
-        }
-        
-        .step-item {
-          background: white;
-          border: 1px solid #e1e8ed;
-          border-radius: 6px;
-          padding: 15px;
-          margin-bottom: 12px;
-          box-shadow: 0 1px 3px rgba(0,0,0,0.05);
-        }
-        
-        .step-header {
-          display: grid;
-          grid-template-columns: 80px 1fr 1fr 1fr;
-          gap: 15px;
-          align-items: start;
-        }
-        
-        .step-id {
-          font-weight: 600;
-          color: #2c3e50;
-          background: #f8f9fa;
-          padding: 4px 8px;
-          border-radius: 4px;
-          text-align: center;
-          font-size: 12px;
-        }
-        
-        .step-description {
-          color: #2c3e50;
-          line-height: 1.5;
-        }
-        
-        .step-test-data {
-          color: #666;
-          font-style: italic;
-          font-size: 14px;
-        }
-        
-        .step-expected {
-          color: #27ae60;
-          font-weight: 500;
-          font-size: 14px;
-        }
-        
-        .step-labels {
-          display: grid;
-          grid-template-columns: 80px 1fr 1fr 1fr;
-          gap: 15px;
-          margin-bottom: 10px;
-          font-weight: 600;
-          color: #666;
-          font-size: 12px;
-          text-transform: uppercase;
-          letter-spacing: 0.5px;
-        }
+        * { box-sizing: border-box; margin:0; padding:0 }
+        body { font-family: -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif; background:#f5f5f5; color:#333 }
+        .app { display:flex; gap:24px; max-width:1200px; margin:20px auto; }
+        .sidebar { width:260px; background:linear-gradient(180deg,#173a8a,#1e40af); color:#fff; padding:24px; border-radius:8px }
+        .logo { font-weight:800; font-size:20px; margin-bottom:16px }
+        .nav-item { padding:10px 12px; border-radius:8px; cursor:pointer; color:#e6eefc; font-weight:600 }
+        .nav-item.active { background: rgba(255,255,255,0.08); color:#fff }
+        .main { flex:1 }
+        .header { display:flex; align-items:center; justify-content:space-between; margin-bottom:16px }
+        .title { font-size:24px; color:#21334a }
+        .form-card, .results-card { background:#fff; border-radius:8px; padding:20px; box-shadow:0 2px 10px rgba(0,0,0,0.06); margin-bottom:16px }
+        .form-group { margin-bottom:12px }
+        .form-label { display:block; font-weight:600; margin-bottom:6px }
+        .form-input, .form-textarea, select { width:100%; padding:10px; border:1px solid #e6eefc; border-radius:6px }
+        .submit-btn { background:#3498db; color:#fff; border:none; padding:10px 16px; border-radius:6px; cursor:pointer; font-weight:700 }
+        .submit-row { display:flex; gap:8px; align-items:center }
+        .results-meta { color:#666; font-size:13px }
+        .results-table { width:100%; border-collapse:collapse; margin-top:12px }
+        .results-table th, .results-table td { padding:12px; border-bottom:1px solid #eef3fb; text-align:left }
       `}</style>
-      
-      <div className="container">
-        <div className="header">
-          <h1 className="title">User Story to Tests</h1>
-          <p className="subtitle">Generate comprehensive test cases from your user stories</p>
-        </div>
-        
-        <form onSubmit={handleSubmit} className="form-container">
-          <div className="form-group">
-            <label htmlFor="storyTitle" className="form-label">
-              Story Title *
-            </label>
-            <input
-              type="text"
-              id="storyTitle"
-              className="form-input"
-              value={formData.storyTitle}
-              onChange={(e) => handleInputChange('storyTitle', e.target.value)}
-              placeholder="Enter the user story title..."
-              required
-            />
-          </div>
 
-          <div className="form-group">
-            <label htmlFor="description" className="form-label">
-              Description
-            </label>
-            <textarea
-              id="description"
-              className="form-textarea"
-              value={formData.description}
-              onChange={(e) => handleInputChange('description', e.target.value)}
-              placeholder="Additional description (optional)..."
-            />
-          </div>
-          
-          <div className="form-group">
-            <label htmlFor="acceptanceCriteria" className="form-label">
-              Acceptance Criteria *
-            </label>
-            <textarea
-              id="acceptanceCriteria"
-              className="form-textarea"
-              value={formData.acceptanceCriteria}
-              onChange={(e) => handleInputChange('acceptanceCriteria', e.target.value)}
-              placeholder="Enter the acceptance criteria..."
-              required
-            />
-          </div>
-          
-          <div className="form-group">
-            <label htmlFor="additionalInfo" className="form-label">
-              Additional Info
-            </label>
-            <textarea
-              id="additionalInfo"
-              className="form-textarea"
-              value={formData.additionalInfo}
-              onChange={(e) => handleInputChange('additionalInfo', e.target.value)}
-              placeholder="Any additional information (optional)..."
-            />
-          </div>
-          
-          <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginBottom: 12 }}>
-            <button
-              type="button"
-              className="submit-btn"
-              onClick={() => setShowJiraInput(s => !s)}
-            >
-              {showJiraInput ? 'Cancel JIRA' : 'Add from JIRA'}
-            </button>
-            {showJiraInput && (
-              <div style={{ display: 'flex', gap: 8, alignItems: 'center', width: '100%' }}>
-                <input
-                  type="text"
-                  className="form-input"
-                  placeholder="Enter JIRA issue key (e.g. PROJ-123)"
-                  value={jiraKey}
-                  onChange={(e) => setJiraKey(e.target.value)}
-                />
-                <button
-                  type="button"
-                  className="submit-btn"
-                  onClick={handleFetchJira}
-                  disabled={isLoading || !jiraKey.trim()}
-                >
-                  Fetch
-                </button>
-              </div>
-            )}
-          </div>
+      <div className="app">
+        <aside className="sidebar">
+          <div className="logo">QA Suite</div>
+          <div className={`nav-item ${currentTab === 'generate' ? 'active' : ''}`} onClick={() => setCurrentTab('generate')}>TestCase Generator</div>
+          <div style={{ height:8 }} />
+          <div className={`nav-item ${currentTab === 'evaluate' ? 'active' : ''}`} onClick={() => setCurrentTab('evaluate')}>Evaluate</div>
+        </aside>
 
-          <button
-            type="submit"
-            className="submit-btn"
-            disabled={isLoading}
-          >
-            {isLoading ? 'Generating...' : 'Generate'}
-          </button>
-        </form>
-
-        {error && (
-          <div className="error-banner">
-            {error}
-          </div>
-        )}
-
-        {isLoading && (
-          <div className="loading">
-            Generating test cases...
-          </div>
-        )}
-
-        {results && (
-          <div className="results-container">
-            <div className="results-header">
-              <h2 className="results-title">Generated Test Cases</h2>
-              <div className="results-meta">
-                {results.cases.length} test case(s) generated
-                {results.model && ` • Model: ${results.model}`}
-                {results.promptTokens > 0 && ` • Tokens: ${results.promptTokens + results.completionTokens}`}
-              </div>
+        <main className="main">
+          <div className="header">
+            <div>
+              <div className="title">User Story to Tests</div>
+              <div style={{ color:'#666', fontSize:13 }}>Generate test cases from user stories</div>
             </div>
-            
-            <div className="table-container">
-              <table className="results-table">
-                <thead>
-                  <tr>
-                    <th>Test Case ID</th>
-                    <th>Title</th>
-                    <th>Category</th>
-                    <th>Expected Result</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {results.cases.map((testCase: TestCase) => (
-                    <>
-                      <tr key={testCase.id}>
-                        <td>
-                          <div 
-                            className={`test-case-id ${expandedTestCases.has(testCase.id) ? 'expanded' : ''}`}
-                            onClick={() => toggleTestCaseExpansion(testCase.id)}
-                          >
-                            <span className={`expand-icon ${expandedTestCases.has(testCase.id) ? 'expanded' : ''}`}>
-                              ▶
-                            </span>
-                            {testCase.id}
-                          </div>
-                        </td>
-                        <td>{testCase.title}</td>
-                        <td>
-                          <span className={`category-${testCase.category.toLowerCase()}`}>
-                            {testCase.category}
-                          </span>
-                        </td>
-                        <td>{testCase.expectedResult}</td>
+          </div>
+
+          {currentTab === 'generate' && (
+            <div>
+              <div className="form-card">
+                <div style={{ display:'flex', gap:12, marginBottom:12 }}>
+                  <button className="submit-btn" onClick={() => {
+                    setShowJiraPicker(s => { const next = !s; if (next && projects.length === 0) loadJiraProjects(); return next })
+                  }}>{showJiraPicker ? 'Close JIRA Picker' : 'Add from JIRA'}</button>
+                  {showJiraPicker && (
+                    <div style={{ display:'flex', gap:8, alignItems:'center' }}>
+                      <select value={selectedProject} onChange={async (e) => { const pk = e.target.value; setSelectedProject(pk); setSelectedIssue(''); setProjectIssues([]); if (pk) await loadIssuesForProject(pk) }}>
+                        <option value="">-- Select Project --</option>
+                        {projects.map(p => <option key={p.key} value={p.key}>{p.name} ({p.key})</option>)}
+                      </select>
+                      <select value={selectedIssue} onChange={(e) => setSelectedIssue(e.target.value)}>
+                        <option value="">-- Select Story --</option>
+                        {projectIssues.map(i => <option key={i.key} value={i.key}>{i.summary} ({i.key})</option>)}
+                      </select>
+                      <button className="submit-btn" onClick={() => selectedIssue && handleSelectIssue(selectedIssue)}>Confirm</button>
+                    </div>
+                  )}
+                </div>
+
+                <form onSubmit={handleSubmit}>
+                  <div className="form-group">
+                    <label className="form-label">Story Title *</label>
+                    <input className="form-input" value={formData.storyTitle} onChange={(e) => handleInputChange('storyTitle', e.target.value)} placeholder="Enter the user story title..." required />
+                  </div>
+
+                  <div className="form-group">
+                    <label className="form-label">Description</label>
+                    <textarea className="form-textarea" value={formData.description} onChange={(e) => handleInputChange('description', e.target.value)} rows={3} />
+                  </div>
+
+                  <div className="form-group">
+                    <label className="form-label">Acceptance Criteria *</label>
+                    <textarea className="form-textarea" value={formData.acceptanceCriteria} onChange={(e) => handleInputChange('acceptanceCriteria', e.target.value)} rows={3} required />
+                  </div>
+
+                  <div className="form-group">
+                    <label className="form-label">Additional Info</label>
+                    <textarea className="form-textarea" value={formData.additionalInfo} onChange={(e) => handleInputChange('additionalInfo', e.target.value)} rows={2} />
+                  </div>
+
+                  <div className="submit-row">
+                    <button className="submit-btn" type="submit" disabled={isLoading}>{isLoading ? 'Generating...' : 'Generate'}</button>
+                  </div>
+                </form>
+              </div>
+
+              {error && <div style={{ background:'#fee', padding:12, borderRadius:6 }}>{error}</div>}
+
+              {results && (
+                <div className="results-card">
+                  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+                    <div>
+                      <div style={{ fontSize:18, fontWeight:700 }}>Generated Test Cases</div>
+                      <div className="results-meta">{results.cases.length} test case(s) generated{results.model ? ` • Model: ${results.model}` : ''}</div>
+                    </div>
+                    <div>
+                      <button className="submit-btn" onClick={downloadCSV}>Download CSV</button>
+                    </div>
+                  </div>
+
+                  <table className="results-table">
+                    <thead>
+                          <tr><th>Test Case ID</th><th>Title</th><th>Category</th><th>Expected Result</th></tr>
+                    </thead>
+                    <tbody>
+                      {results.cases.map(tc => (
+                        <tr key={tc.id}>
+                          <td>{tc.id}</td>
+                          <td>{tc.title}</td>
+                          <td>{tc.category}</td>
+                          <td>{tc.expectedResult}</td>
+                        
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          )}
+
+          {currentTab === 'evaluate' && (
+            <div className="form-card">
+              <div style={{ display:'flex', gap:8 }}>
+                <button className="submit-btn" onClick={runEvalForSelected} disabled={isLoading || selectedIds.length === 0}>Evaluate Selected</button>
+                <button className="submit-btn" onClick={runEvalForAll} disabled={isLoading || !results}>Evaluate All</button>
+              </div>
+
+              <div style={{ marginTop:12, display:'flex', gap:12, alignItems:'center' }}>
+                <div style={{ display:'flex', gap:8, alignItems:'center' }}>
+                  <label style={{ fontWeight:700 }}>Metrics:</label>
+                  <label><input type="checkbox" checked={selectedMetrics.includes('answer_relevancy')} onChange={(e) => {
+                    if (e.target.checked) setSelectedMetrics(prev => Array.from(new Set([...prev, 'answer_relevancy'])))
+                    else setSelectedMetrics(prev => prev.filter(m => m !== 'answer_relevancy'))
+                  }} /> Answer Relevancy</label>
+                  <label><input type="checkbox" checked={selectedMetrics.includes('faithfulness')} onChange={(e) => {
+                    if (e.target.checked) setSelectedMetrics(prev => Array.from(new Set([...prev, 'faithfulness'])))
+                    else setSelectedMetrics(prev => prev.filter(m => m !== 'faithfulness'))
+                  }} /> Faithfulness</label>
+                  <label><input type="checkbox" checked={selectedMetrics.includes('hallucination')} onChange={(e) => {
+                    if (e.target.checked) setSelectedMetrics(prev => Array.from(new Set([...prev, 'hallucination'])))
+                    else setSelectedMetrics(prev => prev.filter(m => m !== 'hallucination'))
+                  }} /> Hallucination</label>
+                </div>
+
+                {/* Jira project/issue picker in Evaluate tab */}
+                <div style={{ marginLeft:20, display:'flex', gap:8, alignItems:'center' }}>
+                  <label style={{ fontWeight:700 }}>JIRA:</label>
+                  <select value={selectedEvalProject} onChange={async (e) => { const pk = e.target.value; setSelectedEvalProject(pk); setSelectedEvalIssue(''); setProjectIssues([]); if (pk) await loadIssuesForProject(pk) }}>
+                    <option value="">-- Project --</option>
+                    {projects.map(p => <option key={p.key} value={p.key}>{p.name} ({p.key})</option>)}
+                  </select>
+                  <select value={selectedEvalIssue} onChange={(e) => setSelectedEvalIssue(e.target.value)}>
+                    <option value="">-- Story --</option>
+                    {projectIssues.map(i => <option key={i.key} value={i.key}>{i.summary} ({i.key})</option>)}
+                  </select>
+                  <button className="submit-btn" onClick={async () => {
+                    if (!selectedEvalIssue) return
+                    try {
+                      setIsLoading(true)
+                      const issue = await fetchJiraIssue(selectedEvalIssue)
+                      const text = `${issue.key}: ${issue.summary}\n${issue.description || ''}`
+                      // store as eval context (used for hallucination checks) — do NOT overwrite the model output
+                      setEvalContext(text)
+                    } catch (err) {
+                      setError(err instanceof Error ? err.message : 'Failed to fetch issue')
+                    } finally {
+                      setIsLoading(false)
+                    }
+                  }}>Load Story (as context)</button>
+                </div>
+              </div>
+              {evalContext && (
+                <div style={{ marginTop:8, background:'#fbfbff', padding:10, borderRadius:6 }}>
+                  <div style={{ fontWeight:700, marginBottom:6 }}>Loaded story (used as evaluation context)</div>
+                  <div style={{ color:'#333', whiteSpace:'pre-wrap' }}>{evalContext}</div>
+                  <div style={{ fontSize:12, color:'#666', marginTop:6 }}>Note: this will be used as context for the <strong>hallucination</strong> metric and will not replace the model output you paste above.</div>
+                </div>
+              )}
+
+              {/* Show generated testcases here with per-testcase evaluation */}
+              {results && (
+                <div style={{ marginTop:16 }} className="results-card">
+                  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+                    <div>
+                      <div style={{ fontSize:18, fontWeight:700 }}>Generated Test Cases</div>
+                      <div className="results-meta">{results.cases.length} test case(s) generated{results.model ? ` • Model: ${results.model}` : ''}</div>
+                    </div>
+                    <div>
+                      <button className="submit-btn" onClick={downloadCSV}>Download CSV</button>
+                    </div>
+                  </div>
+
+                  <table className="results-table">
+                    <thead>
+                      <tr>
+                        <th style={{ width:40 }}><input type="checkbox" onChange={(e) => {
+                          if (!e.target.checked) { setSelectedIds([]); return }
+                          setSelectedIds(results.cases.map((c: any) => c.id))
+                        }} checked={results.cases.length > 0 && selectedIds.length === results.cases.length} /></th>
+                        <th>Test Case ID</th><th>Title</th><th>Category</th><th>Expected Result</th><th>Eval</th>
                       </tr>
-                      {expandedTestCases.has(testCase.id) && (
-                        <tr key={`${testCase.id}-details`}>
-                          <td colSpan={4}>
-                            <div className="expanded-details">
-                              <h4 style={{marginBottom: '15px', color: '#2c3e50'}}>Test Steps for {testCase.id}</h4>
-                              <div className="step-labels">
-                                <div>Step ID</div>
-                                <div>Step Description</div>
-                                <div>Test Data</div>
-                                <div>Expected Result</div>
-                              </div>
-                              {testCase.steps.map((step, index) => (
-                                <div key={index} className="step-item">
-                                  <div className="step-header">
-                                    <div className="step-id">S{String(index + 1).padStart(2, '0')}</div>
-                                    <div className="step-description">{step}</div>
-                                    <div className="step-test-data">{testCase.testData || 'N/A'}</div>
-                                    <div className="step-expected">
-                                      {index === testCase.steps.length - 1 ? testCase.expectedResult : 'Step completed successfully'}
+                    </thead>
+                    <tbody>
+                      {results.cases.map((tc: any) => (
+                        <tr key={tc.id}>
+                          <td>
+                            <input type="checkbox" checked={selectedIds.includes(tc.id)} onChange={(e) => {
+                              if (e.target.checked) setSelectedIds(prev => [...prev, tc.id])
+                              else setSelectedIds(prev => prev.filter(id => id !== tc.id))
+                            }} />
+                          </td>
+                          <td>{tc.id}</td>
+                          <td>{tc.title}</td>
+                          <td>{tc.category}</td>
+                          <td>{tc.expectedResult}</td>
+                          <td>
+                            {evalMetrics[tc.id] ? (
+                              <div>
+                                {Object.keys(evalMetrics[tc.id]).map(metric => {
+                                  const m = evalMetrics[tc.id][metric]
+                                  const score = typeof m?.score !== 'undefined' ? m.score : m?.value ?? JSON.stringify(m)
+                                  return (
+                                    <div key={metric} style={{ marginBottom:6 }}>
+                                      <div style={{ fontWeight:700 }}>{metric}: {String(score)}</div>
+                                      {m?.explanation && <div style={{ color:'#666' }}>{m.explanation}</div>}
                                     </div>
-                                  </div>
-                                </div>
-                              ))}
-                            </div>
+                                  )
+                                })}
+                              </div>
+                            ) : (
+                              <button className="submit-btn" onClick={() => runEvalForTestCase(tc)} disabled={isLoading}>Evaluate</button>
+                            )}
                           </td>
                         </tr>
-                      )}
-                    </>
-                  ))}
-                </tbody>
-              </table>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              {/* aggregated eval result removed; per-testcase metrics shown in the table above */}
+
+              {error && <div style={{ marginTop:12, background:'#fee', padding:12, borderRadius:6 }}>{error}</div>}
             </div>
-          </div>
-        )}
+          )}
+
+        </main>
       </div>
     </div>
   )

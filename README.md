@@ -1,400 +1,199 @@
-# User Story to Tests Generator
+# User Story → Tests — Quick Setup
 
-A full-stack AI-powered application that automatically converts user stories into comprehensive test cases using LLM integration with Groq.
+A short README to help others get this project running locally.
 
-## 📋 Table of Contents
+**Contents**
+- Prerequisites
+- Quick install
+- Configuration (.env)
+- Run (dev & build)
+- Useful commands
+- Notes
 
-- [Project Purpose](#project-purpose)
-- [Framework & Technology Stack](#framework--technology-stack)
-- [Prerequisites](#prerequisites)
-- [Installation](#installation)
-- [Configuration](#configuration)
-- [Running the Project](#running-the-project)
-- [API Endpoints](#api-endpoints)
-- [Usage Examples](#usage-examples)
-- [Project Structure](#project-structure)
+---
 
-## 🎯 Project Purpose
+**Prerequisites**
+- Node.js (v16+ recommended)
+- npm (v8+)
 
-This framework automates the process of generating test cases from user stories. Instead of manually writing tests based on requirements, developers can:
-
-- **Input user stories** in natural language
-- **Generate structured test cases** automatically using AI (Groq LLM)
-- **Create Jira tickets** directly from the generated tests
-- **Ensure test coverage** by deriving tests from actual requirements
-
-### Key Benefits
-
-- **Time Saving**: Automatically generate test cases from user stories
-- **Consistency**: Maintain uniform test structure across projects
-- **Traceability**: Link tests directly to user story requirements
-- **Integration**: Seamlessly integrate with Jira for ticket management
-- **AI-Powered**: Uses Groq's LLM for intelligent test generation
-
-## 🛠️ Framework & Technology Stack
-
-### Backend
-
-- **Node.js** with **Express.js** - REST API server
-- **TypeScript** - Type-safe code
-- **Groq LLM API** - AI model for test generation
-- **Zod** - Schema validation
-- **CORS** - Cross-origin resource sharing
-- **TSX** - TypeScript executor for development
-
-### Frontend
-
-- **React 18** - UI framework
-- **TypeScript** - Type safety
-- **Vite** - Build tool and dev server
-- **Modern CSS** - Styling
-
-### Architecture
-
-- **Monorepo Structure**: Backend and frontend in separate workspaces
-- **REST API**: Backend exposes APIs for test generation and Jira integration
-- **LLM Integration**: Groq API for intelligent test case generation
-- **Environment Configuration**: `.env` file for sensitive data
-
-## 📋 Prerequisites
-
-- **Node.js** (v16 or higher)
-- **npm** (v8 or higher)
-- **Groq API Key** - Get it from [Groq Console](https://console.groq.com)
-- **Jira Account** (optional) - For Jira integration features
-- **Jira API Token** - Get it from [Atlassian Account Settings](https://id.atlassian.com/manage-profile/security/api-tokens)
-
-## 🚀 Installation
-
-### 1. Clone the Repository
+**Quick install**
+1. Clone the repository:
 
 ```bash
-git clone <repository-url>
+git clone <repo-url>
 cd user-story-to-tests
 ```
 
-### 2. Install Dependencies
+2. Install dependencies for both workspaces (from repo root):
 
 ```bash
 npm install
-# OR
-npm run install:all
+# or install per workspace:
+# cd backend && npm install
+# cd ../frontend && npm install
 ```
 
-This will install dependencies for both backend and frontend workspaces.
-
-## ⚙️ Configuration
-
-### 1. Create `.env` File
-
-Create a `.env` file in the root directory:
+**Configuration (.env)**
+Create a `.env` file in the repo root (do NOT commit it). Minimal example:
 
 ```env
-# Server Configuration
 PORT=8080
 CORS_ORIGIN=http://localhost:5173
 
-# Groq LLM Configuration
+# Groq LLM (required for test generation)
 groq_API_BASE=https://api.groq.com/openai/v1
-groq_API_KEY=your_groq_api_key_here
+groq_API_KEY=your_groq_api_key
 groq_MODEL=openai/gpt-oss-120b
 
-# Jira Configuration (Optional)
+# (Optional) Jira integration
 JIRA_BASE=https://your-domain.atlassian.net
 JIRA_EMAIL=your-email@example.com
-JIRA_API_TOKEN=your_jira_api_token_here
+JIRA_API_TOKEN=your_jira_api_token
 ```
 
-### 2. Get Required API Keys
+Make sure values are correct before starting the server.
 
-**Groq API Key:**
-- Visit [Groq Console](https://console.groq.com)
-- Sign up or log in
-- Create a new API key
-- Copy and paste into `groq_API_KEY`
-
-**Jira API Token:**
-- Visit [Atlassian Account Settings](https://id.atlassian.com/manage-profile/security/api-tokens)
-- Click "Create API token"
-- Copy and paste into `JIRA_API_TOKEN`
-
-## 🎮 Running the Project
-
-### Option 1: Run Both Frontend and Backend (Recommended)
-
-```bash
-npm run dev
-```
-
-This starts both services concurrently:
-- **Backend**: http://localhost:8080
-- **Frontend**: http://localhost:5173
-
-### Option 2: Run Backend Only
+**Run (development)**
+- Start backend only:
 
 ```bash
 cd backend
 npm run dev
 ```
 
-The backend server runs on `http://localhost:8080`
-
-### Option 3: Run Frontend Only
+- Start frontend only:
 
 ```bash
 cd frontend
 npm run dev
 ```
 
-The frontend runs on `http://localhost:5173`
-
-### Production Build
+- Run both (if root `package.json` has a dev script):
 
 ```bash
+npm run dev
+```
+
+Default URLs:
+- Backend API: http://localhost:8080/api
+- Frontend UI: http://localhost:5173
+
+**Common endpoints**
+- Health: `GET /api/health`
+- Generate tests: `POST /api/generate-tests`
+- Jira (if configured): `GET /api/jira/projects` and `GET /api/jira/:issueKey`
+
+**DeepEval (evaluation) integration (removed)**
+The built-in DeepEval demo has been removed from this repository. If you still want to run evaluation locally, reintroduce your own evaluation service and configure `DEEPEVAL_URL` accordingly.
+
+Notes
+- The hallucination metric requires a `context` list (source passages) to check outputs against; ensure the story description/acceptance criteria are populated before running hallucination.
+
+**Download CSV**
+The UI provides a "Download CSV" action after generating test cases.
+
+**Build / Production**
+- Build frontend:
+
+```bash
+cd frontend
 npm run build
 ```
 
-### Type Checking
+- Build backend (if applicable): follow your usual TypeScript build script in `backend/package.json`.
+
+**Useful commands**
+- Type-check:
 
 ```bash
 npm run typecheck
 ```
 
-## 📡 API Endpoints
+- Lint / format: check the `package.json` scripts in each workspace.
 
-### Health Check
+**Troubleshooting**
+- If Jira endpoints fail with authentication errors, re-check `JIRA_EMAIL` and `JIRA_API_TOKEN`.
+- If CORS issues occur, verify `CORS_ORIGIN` in `.env` matches the frontend URL.
+- Inspect backend logs; server prints the `.env` path when starting.
 
-```http
-GET /api/health
-```
-
-**Response:**
-```json
-{
-  "status": "OK",
-  "timestamp": "2026-01-28T10:30:00.000Z"
-}
-```
-
-### Generate Tests from User Story
-
-```http
-POST /api/generate-tests
-Content-Type: application/json
-
-{
-  "userStory": "As a user, I want to login with email and password so that I can access my account",
-  "acceptanceCriteria": [
-    "User can enter email and password",
-    "System validates credentials",
-    "User is redirected to dashboard on success"
-  ],
-  "projectContext": "Authentication module for web application"
-}
-```
-
-**Response:**
-```json
-{
-  "testCases": [
-    {
-      "id": "TEST-001",
-      "name": "Valid login with correct credentials",
-      "description": "Verify user can login with valid email and password",
-      "steps": [
-        {
-          "step": 1,
-          "action": "Navigate to login page",
-          "expectedResult": "Login form is displayed"
-        },
-        {
-          "step": 2,
-          "action": "Enter valid email and password",
-          "expectedResult": "Email and password fields are populated"
-        },
-        {
-          "step": 3,
-          "action": "Click login button",
-          "expectedResult": "User is redirected to dashboard"
-        }
-      ],
-      "priority": "High",
-      "estimatedTime": "5 minutes"
-    }
-  ],
-  "model": "openai/gpt-oss-120b",
-  "promptTokens": 250,
-  "completionTokens": 450
-}
-```
-
-### Create Jira Issue with Tests
-
-```http
-POST /api/jira/create-issue
-Content-Type: application/json
-
-{
-  "projectKey": "PROJ",
-  "summary": "Login functionality tests",
-  "description": "Test cases for login feature",
-  "issueType": "Test",
-  "testCases": [...]
-}
-```
-
-## 💡 Usage Examples
-
-### Example 1: Generate Tests for a Shopping Feature
-
-**Input User Story:**
-```
-As an e-commerce customer, I want to add items to my shopping cart so that I can purchase them later.
-```
-
-**Acceptance Criteria:**
-- User can see "Add to Cart" button on product page
-- Clicking button adds item to cart
-- Cart count updates instantly
-- User can view cart contents
-
-**Generated Output:**
-The system will generate comprehensive test cases covering:
-- Positive scenarios (adding valid items)
-- Edge cases (adding duplicate items, max quantity)
-- Error scenarios (out of stock items)
-
-### Example 2: Full Integration Workflow
-
-```bash
-# 1. Start the application
-npm run dev
-
-# 2. Open frontend at http://localhost:5173
-
-# 3. Enter your user story in the UI
-
-# 4. Click "Generate Tests"
-
-# 5. Review generated test cases
-
-# 6. (Optional) Create Jira issue with the test cases
-```
-
-### Example 3: API Call from JavaScript
-
-```javascript
-const userStory = "As a user, I want to reset my password via email";
-const acceptanceCriteria = [
-  "User receives password reset email",
-  "Link in email is valid for 24 hours",
-  "User can set new password"
-];
-
-const response = await fetch('http://localhost:8080/api/generate-tests', {
-  method: 'POST',
-  headers: {
-    'Content-Type': 'application/json'
-  },
-  body: JSON.stringify({
-    userStory,
-    acceptanceCriteria,
-    projectContext: "User authentication system"
-  })
-});
-
-const testCases = await response.json();
-console.log(testCases);
-```
-
-## 📁 Project Structure
-
-```
-user-story-to-tests/
-├── backend/                          # Express.js API server
-│   ├── src/
-│   │   ├── server.ts                # Main server file
-│   │   ├── prompt.ts                # LLM prompt templates
-│   │   ├── schemas.ts               # Zod validation schemas
-│   │   ├── llm/
-│   │   │   └── groqClient.ts        # Groq API client
-│   │   ├── routes/
-│   │   │   ├── generate.ts          # Test generation endpoint
-│   │   │   └── jira.ts              # Jira integration endpoint
-│   │   └── services/
-│   │       └── jiraService.ts       # Jira API service
-│   ├── package.json
-│   └── tsconfig.json
-│
-├── frontend/                         # React + Vite UI
-│   ├── src/
-│   │   ├── App.tsx                  # Main component
-│   │   ├── api.ts                   # API client
-│   │   ├── main.tsx                 # Entry point
-│   │   ├── types.ts                 # TypeScript types
-│   │   └── vite-env.d.ts
-│   ├── index.html
-│   ├── package.json
-│   ├── tsconfig.json
-│   └── vite.config.ts
-│
-├── .env                              # Environment variables
-├── package.json                      # Root workspace configuration
-└── README.md                         # This file
-```
-
-## 🔧 Troubleshooting
-
-### Issue: "Cannot find module dotenv"
-
-**Solution:** Run `npm install` in the backend directory:
-```bash
-cd backend
-npm install
-```
-
-### Issue: Groq API Key Error
-
-**Solution:** Verify your API key is correct in `.env`:
-```env
-groq_API_KEY=gsk_xxxxxxxxxxxxxxxxxxxxxxxxxx
-```
-
-### Issue: CORS Error
-
-**Solution:** Ensure `CORS_ORIGIN` matches your frontend URL:
-```env
-CORS_ORIGIN=http://localhost:5173
-```
-
-### Issue: Frontend can't connect to Backend
-
-**Solution:** Verify backend is running on correct port:
-```bash
-# Check if port 8080 is available
-# Or change PORT in .env
-PORT=3000
-```
-
-## 📝 Notes
-
-- Keep your `.env` file private and never commit it to version control
-- The `.gitignore` file should exclude `.env`
-- Generated test cases can be exported to various formats (JSON, CSV, etc.)
-- All API responses include token usage metrics for cost tracking
-
-## 🤝 Contributing
-
-Feel free to extend this project with:
-- Additional LLM provider support
-- More test case formats
-- Enhanced Jira integration
-- Custom validation rules
-
-## 📄 License
-
-[Add your license here]
+**Notes**
+- Keep `.env` private and out of source control.
+- This README intentionally focuses on setup and running steps only.
 
 ---
 
-**Happy Testing! 🚀**
+Happy testing!
+
+---
+**DeepEval quick links**
+
+- Local guide: `deepeval/README.md` — run steps, endpoints, and curl examples.
+- Postman collection: `deepeval/postman_collection.json` (Health + Eval example).
+- Recommended demo ports: Node demo `http://localhost:3001`, Python stub `http://localhost:3002`, backend `http://localhost:8080`, frontend `http://localhost:5173`.
+
+Start the Node demo first (recommended), then start the backend and frontend.
+
+## DeepEval demo (current)
+
+This repository includes a small local demo and proxy integration for running evaluation (DeepEval-style) locally. The frontend will prefer a direct eval service when `VITE_DEEPEVAL_URL` is set, otherwise it calls the backend proxy at `/api/deepeval/eval-only`.
+
+- Use the direct option (`VITE_DEEPEVAL_URL`) if you have a remote eval service to call directly from the browser.
+- Use the backend proxy when you want the backend to forward evaluation requests to a local demo service mounted under the backend.
+
+Files/locations of interest:
+- `deepeval/` — demo services (Node demo under `deepeval/src` and a small Python stub `deepeval/deepeval_server.py`).
+- `backend/src/server.ts` — mounts the demo routes under `/api/deepeval` when present.
+- `frontend/src/api.ts` — `evaluateWithDeepEval()` prefers `VITE_DEEPEVAL_URL`, falling back to `/api/deepeval/eval-only`.
+
+Quick run instructions (local demo):
+
+1) Node-based demo (recommended for the richer local behavior)
+
+```bash
+cd deepeval
+npm install
+npm run dev
+```
+
+The Node demo will listen on its configured port and the backend can be configured to proxy to it or you can point the frontend directly via `VITE_DEEPEVAL_URL`.
+
+2) Python stub (minimal; convenient for quick pip installs)
+
+```bash
+cd deepeval
+pip install -r requirements.txt
+python deepeval_server.py
+```
+
+3) Start backend (proxy):
+
+```bash
+cd backend
+npm run dev
+```
+
+4) Start frontend (with direct eval override):
+
+Edit `frontend/.env` (or root `.env`) to add:
+
+```
+VITE_DEEPEVAL_URL=http://localhost:3001/api/eval-only  # example
+```
+
+Then run:
+
+```bash
+cd frontend
+npm run dev
+```
+
+Environment variables to check (summary):
+- `VITE_DEEPEVAL_URL` — optional; when present, frontend calls this URL for evaluation.
+- `DEEPEVAL_URL` — used by backend proxy configuration if applicable.
+- `JIRA_BASE`, `JIRA_EMAIL`, `JIRA_API_TOKEN` — only required if using Jira features.
+
+Troubleshooting
+- If the frontend fails to evaluate and shows network errors, confirm whether it's using the direct URL or the backend proxy (browser devtools will show which URL is called).
+- If you run the Python stub and `pip install -r requirements.txt` previously failed, ensure `requirements.txt` is present in `deepeval/` (it is included with the stub).
+
+If you'd like, I can also add a short `deepeval/README.md` with exact ports and example payloads for the demo service.

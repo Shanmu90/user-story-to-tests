@@ -103,67 +103,161 @@ export async function fetchJiraIssue(issueKey: string): Promise<JiraStory> {
   const url = `${base.replace(/\/$/, '')}/rest/api/3/issue/${encodeURIComponent(issueKey)}?fields=${encodeURIComponent(fieldsQuery.join(','))}`
   const auth = Buffer.from(`${email}:${token}`).toString('base64')
 
-  const res = await fetch(url, {
-    method: 'GET',
-    headers: {
-      Authorization: `Basic ${auth}`,
-      Accept: 'application/json'
+  try {
+    console.log('Jira: fetching issue from URL:', url)
+    const res = await fetch(url, {
+      method: 'GET',
+      headers: {
+        Authorization: `Basic ${auth}`,
+        Accept: 'application/json'
+      }
+    })
+
+    if (!res.ok) {
+      const text = await res.text().catch(() => '')
+      const err = new Error(`Jira API error ${res.status}: ${text || res.statusText}`)
+      ;(err as any).status = res.status
+      throw err
     }
-  })
 
-  if (!res.ok) {
-    const text = await res.text().catch(() => '')
-    const err = new Error(`Jira API error ${res.status}: ${text || res.statusText}`)
-    ;(err as any).status = res.status
-    throw err
-  }
+    const data = await res.json() as any
+    const fields = data.fields || {}
 
-  const data = await res.json() as any
-  const fields = data.fields || {}
+    // Description may be Atlassian Document Format (ADF) or plain string
+    const rawDescription = fields.description
+    const description = adfToPlainText(rawDescription)
 
-  // Description may be Atlassian Document Format (ADF) or plain string
-  const rawDescription = fields.description
-  const description = adfToPlainText(rawDescription)
+    // Try to read acceptance criteria from a configured custom field first
+    let acceptanceCriteria: string | undefined
+    if (acField && fields[acField]) {
+      const rawAc = fields[acField]
+      if (typeof rawAc === 'string') acceptanceCriteria = rawAc.trim()
+      else acceptanceCriteria = adfToPlainText(rawAc)
+    }
 
-  // Try to read acceptance criteria from a configured custom field first
-  let acceptanceCriteria: string | undefined
-  if (acField && fields[acField]) {
-    const rawAc = fields[acField]
-    if (typeof rawAc === 'string') acceptanceCriteria = rawAc.trim()
-    else acceptanceCriteria = adfToPlainText(rawAc)
-  }
+    // Fallback: try to extract from description text
+    if (!acceptanceCriteria) {
+      acceptanceCriteria = extractAcceptanceCriteria(description)
+    }
 
-  // Fallback: try to extract from description text
-  if (!acceptanceCriteria) {
-    acceptanceCriteria = extractAcceptanceCriteria(description)
-  }
+    // If still not found, scan other fields for likely acceptance-criteria content
+    if (!acceptanceCriteria) {
+      for (const [key, value] of Object.entries(fields)) {
+        if (key === 'summary' || key === 'description') continue
+        if (value == null) continue
 
-  // If still not found, scan other fields for likely acceptance-criteria content
-  if (!acceptanceCriteria) {
-    for (const [key, value] of Object.entries(fields)) {
-      if (key === 'summary' || key === 'description') continue
-      if (value == null) continue
+        let textVal = ''
+        if (typeof value === 'string') textVal = value
+        else if (Array.isArray(value)) textVal = value.map(v => (typeof v === 'string' ? v : adfToPlainText(v))).join('\n')
+        else textVal = adfToPlainText(value)
 
-      let textVal = ''
-      if (typeof value === 'string') textVal = value
-      else if (Array.isArray(value)) textVal = value.map(v => (typeof v === 'string' ? v : adfToPlainText(v))).join('\n')
-      else textVal = adfToPlainText(value)
-
-      const extracted = extractAcceptanceCriteria(textVal)
-      if (extracted) {
-        acceptanceCriteria = extracted
-        break
+        const extracted = extractAcceptanceCriteria(textVal)
+        if (extracted) {
+          acceptanceCriteria = extracted
+          break
+        }
       }
     }
+
+    // Final fallback: use the description text so generator has something in the required field
+    if (!acceptanceCriteria) acceptanceCriteria = description || ''
+
+    return {
+      key: data.key,
+      summary: fields.summary || '',
+      description,
+      acceptanceCriteria
+    }
+  } catch (err: any) {
+    console.error('Failed to fetch Jira issue. Base URL:', base, 'Issue:', issueKey)
+    console.error('Error detail:', err && err.message ? err.message : err)
+    throw new Error(`Failed to reach Jira at ${base}: ${err && err.message ? err.message : String(err)}`)
+  }
+}
+
+export async function fetchJiraProjects(): Promise<Array<{ key: string; name: string }>> {
+  const base = process.env.JIRA_BASE || process.env.JIRA_URL
+  const email = process.env.JIRA_EMAIL
+  const token = process.env.JIRA_API_TOKEN
+
+  if (!base || !email || !token) {
+    throw new Error('JIRA_BASE, JIRA_EMAIL and JIRA_API_TOKEN must be set in environment')
   }
 
-  // Final fallback: use the description text so generator has something in the required field
-  if (!acceptanceCriteria) acceptanceCriteria = description || ''
+  const url = `${base.replace(/\/$/, '')}/rest/api/3/project/search?orderBy=name`
+  const auth = Buffer.from(`${email}:${token}`).toString('base64')
 
-  return {
-    key: data.key,
-    summary: fields.summary || '',
-    description,
-    acceptanceCriteria
+  try {
+    console.log('Jira: fetching projects from URL:', url)
+    const res = await fetch(url, {
+      method: 'GET',
+      headers: {
+        Authorization: `Basic ${auth}`,
+        Accept: 'application/json'
+      }
+    })
+
+    if (!res.ok) {
+      const text = await res.text().catch(() => '')
+      const err = new Error(`Jira API error ${res.status}: ${text || res.statusText}`)
+      ;(err as any).status = res.status
+      throw err
+    }
+
+    const data = await res.json().catch(() => ({})) as any
+    const values = Array.isArray(data) ? data : data.values || []
+    return values.map((p: any) => ({ key: p.key, name: p.name }))
+  } catch (err: any) {
+    console.error('Failed to fetch Jira projects. Base URL:', base)
+    console.error('Error detail:', err && err.message ? err.message : err)
+    throw new Error(`Failed to reach Jira at ${base}: ${err && err.message ? err.message : String(err)}`)
+  }
+}
+
+export async function fetchJiraIssues(projectKey: string): Promise<Array<{ key: string; summary: string }>> {
+  const base = process.env.JIRA_BASE || process.env.JIRA_URL
+  const email = process.env.JIRA_EMAIL
+  const token = process.env.JIRA_API_TOKEN
+
+  if (!base || !email || !token) {
+    throw new Error('JIRA_BASE, JIRA_EMAIL and JIRA_API_TOKEN must be set in environment')
+  }
+
+  const jql = `project = ${projectKey} AND issuetype = Story ORDER BY created DESC`
+  const url = `${base.replace(/\/$/, '')}/rest/api/3/search/jql`
+  const auth = Buffer.from(`${email}:${token}`).toString('base64')
+
+  try {
+    console.log('Jira: fetching issues for project via JQL URL:', url)
+    const body = {
+      jql,
+      fields: ['summary'],
+      maxResults: 100
+    }
+
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        Authorization: `Basic ${auth}`,
+        Accept: 'application/json',
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(body)
+    })
+
+    if (!res.ok) {
+      const text = await res.text().catch(() => '')
+      const err = new Error(`Jira API error ${res.status}: ${text || res.statusText}`)
+      ;(err as any).status = res.status
+      throw err
+    }
+
+    const data = await res.json() as any
+    const issues = data.issues || []
+    return issues.map((i: any) => ({ key: i.key, summary: (i.fields && i.fields.summary) || '' }))
+  } catch (err: any) {
+    console.error('Failed to fetch Jira issues. Base URL:', base, 'Project:', projectKey)
+    console.error('Error detail:', err && err.message ? err.message : err)
+    throw new Error(`Failed to reach Jira at ${base}: ${err && err.message ? err.message : String(err)}`)
   }
 }
