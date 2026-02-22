@@ -19,7 +19,8 @@ function App() {
   const [projectIssues, setProjectIssues] = useState<Array<{ key: string; summary: string }>>([])
   const [selectedIssue, setSelectedIssue] = useState<string>('')
 
-  const [currentTab, setCurrentTab] = useState<'generate' | 'evaluate'>('generate')
+  const [currentTab, setCurrentTab] = useState<'generate' | 'convert' | 'evaluate'>('generate')
+  const [selectedConvertIds, setSelectedConvertIds] = useState<string[]>([])
   const [evalMetrics, setEvalMetrics] = useState<Record<string, Record<string, any>>>({})
   const [selectedIds, setSelectedIds] = useState<string[]>([])
   const [selectedMetrics, setSelectedMetrics] = useState<string[]>(['answer_relevancy','faithfulness','hallucination'])
@@ -117,6 +118,79 @@ function App() {
     URL.revokeObjectURL(url)
   }
 
+  const downloadGherkin = () => {
+    if (!results) return
+    // Build a simple Gherkin feature file where each test case is a Scenario
+    const lines: string[] = []
+    const featureTitle = formData.storyTitle || 'Generated Feature'
+    lines.push(`Feature: ${featureTitle}`)
+    lines.push('')
+    results.cases.forEach(tc => {
+      // sanitize title
+      const scenarioTitle = tc.title || tc.id
+      lines.push(`  Scenario: ${scenarioTitle}`)
+      // if there are steps, map them to Given/When/Then heuristically
+      if (Array.isArray(tc.steps) && tc.steps.length) {
+        tc.steps.forEach((s: string, idx: number) => {
+          const prefix = idx === tc.steps.length - 1 ? 'Then' : idx === 0 ? 'Given' : 'When'
+          lines.push(`    ${prefix} ${s}`)
+        })
+      } else {
+        // fallback to expected result as Then
+        if (tc.expectedResult) lines.push(`    Then ${tc.expectedResult}`)
+      }
+      if (tc.testData) lines.push(`    # Test data: ${tc.testData}`)
+      lines.push('')
+    })
+
+    const content = lines.join('\n')
+    const blob = new Blob([content], { type: 'text/x-gherkin;charset=utf-8;' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `${featureTitle.replace(/[^a-z0-9]+/gi, '_').toLowerCase() || 'feature'}.feature`
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    URL.revokeObjectURL(url)
+  }
+
+  const downloadGherkinForIds = (ids: string[]) => {
+    if (!results) return
+    const selected = results.cases.filter((c: any) => ids.includes(c.id))
+    if (!selected.length) return
+
+    const lines: string[] = []
+    const featureTitle = formData.storyTitle || 'Generated Feature'
+    lines.push(`Feature: ${featureTitle}`)
+    lines.push('')
+    selected.forEach((tc: any) => {
+      const scenarioTitle = tc.title || tc.id
+      lines.push(`  Scenario: ${scenarioTitle}`)
+      if (Array.isArray(tc.steps) && tc.steps.length) {
+        tc.steps.forEach((s: string, idx: number) => {
+          const prefix = idx === tc.steps.length - 1 ? 'Then' : idx === 0 ? 'Given' : 'When'
+          lines.push(`    ${prefix} ${s}`)
+        })
+      } else {
+        if (tc.expectedResult) lines.push(`    Then ${tc.expectedResult}`)
+      }
+      if (tc.testData) lines.push(`    # Test data: ${tc.testData}`)
+      lines.push('')
+    })
+
+    const content = lines.join('\n')
+    const blob = new Blob([content], { type: 'text/x-gherkin;charset=utf-8;' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `${featureTitle.replace(/[^a-z0-9]+/gi, '_').toLowerCase() || 'feature'}.feature`
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    URL.revokeObjectURL(url)
+  }
+
   
 
   const runEvalForTestCase = async (tc: any) => {
@@ -201,7 +275,7 @@ function App() {
     <div>
       <style>{`
         * { box-sizing: border-box; margin:0; padding:0 }
-        body { font-family: -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif; background:#f5f5f5; color:#333 }
+        body { font-family: -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif; background:#ffffff; color:#111 }
         .app { display:flex; gap:24px; max-width:1200px; margin:20px auto; }
         .sidebar { width:260px; background:linear-gradient(180deg,#173a8a,#1e40af); color:#fff; padding:24px; border-radius:8px }
         .logo { font-weight:800; font-size:20px; margin-bottom:16px }
@@ -222,9 +296,11 @@ function App() {
       `}</style>
 
       <div className="app">
-        <aside className="sidebar">
+          <aside className="sidebar">
           <div className="logo">QA Suite</div>
           <div className={`nav-item ${currentTab === 'generate' ? 'active' : ''}`} onClick={() => setCurrentTab('generate')}>TestCase Generator</div>
+          <div style={{ height:8 }} />
+          <div className={`nav-item ${currentTab === 'convert' ? 'active' : ''}`} onClick={() => setCurrentTab('convert')}>Convert to Gherkin</div>
           <div style={{ height:8 }} />
           <div className={`nav-item ${currentTab === 'evaluate' ? 'active' : ''}`} onClick={() => setCurrentTab('evaluate')}>Evaluate</div>
         </aside>
@@ -296,7 +372,8 @@ function App() {
                       <div className="results-meta">{results.cases.length} test case(s) generated{results.model ? ` • Model: ${results.model}` : ''}</div>
                     </div>
                     <div>
-                      <button className="submit-btn" onClick={downloadCSV}>Download CSV</button>
+                        <button className="submit-btn" onClick={downloadCSV}>Download CSV</button>
+                        <button style={{ marginLeft:8 }} className="submit-btn" onClick={downloadGherkin}>Download Gherkin</button>
                     </div>
                   </div>
 
@@ -318,6 +395,45 @@ function App() {
                   </table>
                 </div>
               )}
+            </div>
+          )}
+
+          {currentTab === 'convert' && (
+            <div>
+              <div className="form-card">
+                <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+                  <div style={{ fontSize:18, fontWeight:700 }}>Convert Test Cases to Gherkin</div>
+                  <div>
+                    <button className="submit-btn" onClick={() => { if (selectedConvertIds.length) downloadGherkinForIds(selectedConvertIds) }} disabled={!results || selectedConvertIds.length === 0}>Convert Selected to Gherkin</button>
+                  </div>
+                </div>
+
+                {!results && <div style={{ marginTop:12, color:'#666' }}>No generated test cases yet. Generate test cases first.</div>}
+
+                {results && (
+                  <table className="results-table" style={{ marginTop:12 }}>
+                    <thead>
+                      <tr><th style={{ width:40 }}></th><th>Test Case ID</th><th>Title</th><th>Category</th><th>Actions</th></tr>
+                    </thead>
+                    <tbody>
+                      {results.cases.map((tc: any) => (
+                        <tr key={tc.id}>
+                          <td>
+                            <input type="checkbox" checked={selectedConvertIds.includes(tc.id)} onChange={(e) => {
+                              if (e.target.checked) setSelectedConvertIds(prev => Array.from(new Set([...prev, tc.id])))
+                              else setSelectedConvertIds(prev => prev.filter(id => id !== tc.id))
+                            }} />
+                          </td>
+                          <td>{tc.id}</td>
+                          <td>{tc.title}</td>
+                          <td>{tc.category}</td>
+                          <td><button className="submit-btn" onClick={() => downloadGherkinForIds([tc.id])}>Convert</button></td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </div>
             </div>
           )}
 
